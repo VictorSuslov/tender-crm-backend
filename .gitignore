@@ -1,0 +1,56 @@
+# ============ Python ============
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+# ============ Virtual Environment ============
+venv/
+env/
+.venv/
+ENV/
+
+# ============ IDE ============
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ============ Environment Variables ============
+.env
+.env.local
+.env.*.local
+
+# ============ Logs ============
+*.log
+logs/
+
+# ============ Database ============
+*.db
+*.sqlite3
+
+# ============ OS ============
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ============ Uploads / Attachments ============
+uploads/
+attachments/
+*.pdf
+*.docx
+*.xlsx
+
+# ============ Tests ============
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ============ Temporary ============
+*.tmp
+*.bak
