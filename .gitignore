@@ -1,56 +1,39 @@
-# ============ Python ============
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-*.egg-info/
-dist/
-build/
-*.egg
-
-# ============ Virtual Environment ============
-venv/
-env/
-.venv/
-ENV/
-
-# ============ IDE ============
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-
-# ============ Environment Variables ============
+# Секреты и настройки
 .env
 .env.local
 .env.*.local
 
-# ============ Logs ============
+# Виртуальное окружение
+venv/
+.venv/
+
+# Кэш Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Логи
 *.log
 logs/
 
-# ============ Database ============
+# Базы данных
 *.db
 *.sqlite3
 
-# ============ OS ============
-.DS_Store
-Thumbs.db
-desktop.ini
-
-# ============ Uploads / Attachments ============
+# Вложения и загрузки
 uploads/
 attachments/
 *.pdf
 *.docx
 *.xlsx
+*.zip
 
-# ============ Tests ============
-.pytest_cache/
-.coverage
-htmlcov/
+# OS файлы
+.DS_Store
+Thumbs.db
+desktop.ini
 
-# ============ Temporary ============
-*.tmp
-*.bak
+# IDE
+.vscode/
+.idea/
+*.swp

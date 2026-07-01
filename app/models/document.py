@@ -21,8 +21,6 @@ class Document(Base):
     content: Mapped[str] = mapped_column(Text, nullable=False)
     source_path: Mapped[Optional[str]] = mapped_column(Text)
     
-    # В БД колонка называется 'metadata', но в Python используем 'doc_metadata'
-    # чтобы не конфликтовать с зарезервированным атрибутом SQLAlchemy
     doc_metadata: Mapped[Optional[dict]] = mapped_column("metadata", JSONB)
     
     is_indexed: Mapped[bool] = mapped_column(Boolean, default=False)
