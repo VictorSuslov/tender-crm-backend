@@ -43,7 +43,8 @@ class IMAPService:
     def _parse_message(self, msg: MailMessage) -> dict:
         """Парсит письмо в словарь."""
         # Извлекаем текст
-        body_text = ""
+        body_text = msg.text or ""
+        body_html = msg.html or ""
         if msg.text and len(msg.text.strip()) > 50:
             body_text = msg.text
         elif msg.html:
@@ -82,6 +83,7 @@ class IMAPService:
             "to_emails": ", ".join(msg.to),
             "subject": msg.subject,
             "body_text": body_text,
+            "body_html": body_html,
             "email_date": msg.date,
             "attachments_info": attachments_info,
             "attachments_payloads": attachments_payloads,

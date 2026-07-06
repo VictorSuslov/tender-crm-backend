@@ -30,6 +30,7 @@ class EmailRead(BaseModel):
     to_emails: Optional[str] = None
     subject: Optional[str] = None
     body_text: Optional[str] = None
+    body_html: Optional[str] = None
     
     category: str
     summary: Optional[str] = None
@@ -51,10 +52,12 @@ class EmailRead(BaseModel):
 
 class EmailList(BaseModel):
     """Схема списка писем с пагинацией."""
+    model_config = ConfigDict(from_attributes=True)
+    
     items: List[EmailRead]
     total: int
-    page: int
-    per_page: int
+    page: int = 1
+    per_page: int = 50
 
 
 class EmailLinkCreate(BaseModel):

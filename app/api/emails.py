@@ -1,13 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import select, func, desc, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional
 
 from app.database import get_db
-from app.schemas.email import (
-    EmailRead,
-    EmailList,
-    EmailLinkCreate,
-)
+from app.models.email import Email
+from app.schemas.email import EmailRead, EmailList
 from app.services.email_service import EmailService
 
 
@@ -16,40 +14,51 @@ router = APIRouter(prefix="/api/emails", tags=["emails"])
 
 @router.get("/", response_model=EmailList)
 async def list_emails(
-    category: Optional[str] = Query(None, description="Фильтр по категории (TENDER, SPAM, GENERAL, EMPTY)"),
-    search: Optional[str] = Query(None, description="Поиск по теме, отправителю, резюме"),
-    is_important: Optional[bool] = Query(None, description="Фильтр по важности"),
-    has_attachments: Optional[bool] = Query(None, description="Фильтр по наличию вложений"),
-    processing_status: Optional[str] = Query(None, description="Статус обработки"),
-    page: int = Query(1, ge=1, description="Номер страницы"),
-    per_page: int = Query(20, ge=1, le=100, description="Размер страницы"),
+    page: int = Query(1, ge=1),
+    per_page: int = Query(50, ge=1, le=15000),
+    category: Optional[str] = Query(None),
+    search: Optional[str] = Query(None, description="Поиск по теме и отправителю"),
     db: AsyncSession = Depends(get_db),
 ):
-    """Получить список писем с фильтрацией и пагинацией."""
-    emails, total = await EmailService.get_emails(
-        db,
-        category=category,
-        search=search,
-        is_important=is_important,
-        has_attachments=has_attachments,
-        processing_status=processing_status,
-        page=page,
-        per_page=per_page,
-    )
+    """Получить список писем с пагинацией, фильтрацией и поиском."""
+    query = select(Email)
+    count_query = select(func.count(Email.id))
     
-    # Дополняем данные связями с тендерами
-    items = []
-    for email in emails:
-        linked_tenders = await EmailService.get_linked_tenders(db, email.id)
-        item = EmailRead.model_validate(email)
-        item.linked_tenders = linked_tenders
-        items.append(item)
+    # Фильтр по категории
+    if category:
+        query = query.where(Email.category == category)
+        count_query = count_query.where(Email.category == category)
+    
+    # Поиск по теме и отправителю
+    if search:
+        search_pattern = f"%{search}%"
+        search_filter = or_(
+            Email.subject.ilike(search_pattern),
+            Email.from_email.ilike(search_pattern),
+            Email.from_name.ilike(search_pattern),
+        )
+        query = query.where(search_filter)
+        count_query = count_query.where(search_filter)
+    
+    # Общее количество
+    total_result = await db.execute(count_query)
+    total = total_result.scalar()
+    
+    # Сортировка и пагинация
+    query = query.order_by(
+        desc(Email.email_date),
+        desc(Email.received_at)
+    )
+    query = query.offset((page - 1) * per_page).limit(per_page)
+    
+    result = await db.execute(query)
+    items = result.scalars().all()
     
     return EmailList(
         items=items,
         total=total,
         page=page,
-        per_page=per_page,
+        per_page=per_page
     )
 
 

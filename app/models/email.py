@@ -25,6 +25,7 @@ class Email(Base):
     # Содержание
     subject: Mapped[Optional[str]] = mapped_column(Text)
     body_text: Mapped[Optional[str]] = mapped_column(Text)
+    body_html: Mapped[Optional[str]] = mapped_column(Text)
     
     # Классификация
     category: Mapped[str] = mapped_column(String(50), nullable=False)

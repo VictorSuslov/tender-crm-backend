@@ -1,6 +1,10 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
+from datetime import datetime, timedelta
 from typing import Optional
+from app.services.imap_checker import IMAPChecker
+import asyncio
+from functools import partial
 
 from app.database import get_db
 from app.services.email_processor import EmailProcessor
@@ -11,18 +15,44 @@ router = APIRouter(prefix="/api/worker", tags=["worker"])
 
 @router.post("/process")
 async def process_emails(
-    limit: int = Query(50, ge=1, le=200, description="Количество писем для обработки"),
+    limit: int = Query(50, ge=1, le=500, description="Количество писем для обработки"),
+    since_date: Optional[str] = Query(
+        None,
+        description="Обрабатывать письма с даты (формат: YYYY-MM-DD). "
+                   "Если не указано — последние N писем"
+    ),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Запустить обработку новых писем.
+    Обработать письма с настройками.
     
-    ⚠️ Внимание: операция занимает 2-5 минут в зависимости от количества писем.
-    Возвращает статистику обработки после завершения.
+    Режимы работы:
+    - Только limit: обработать последние N писем
+    - Только since_date: обработать все письма с указанной даты
+    - Оба параметра: обработать N писем с указанной даты
     """
     try:
+        # Парсим дату
+        since_dt = None
+        if since_date:
+            try:
+                since_dt = datetime.strptime(since_date, "%Y-%m-%d")
+            except ValueError:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Неверный формат даты. Используйте YYYY-MM-DD"
+                )
+        
         processor = EmailProcessor()
-        stats = await processor.process_new_emails(limit=limit)
+        
+        # Если указана дата — передаём её
+        if since_dt:
+            stats = await processor.process_new_emails(
+                limit=limit,
+                since_date=since_dt
+            )
+        else:
+            stats = await processor.process_new_emails(limit=limit)
         
         return {
             "status": "completed",
@@ -85,3 +115,29 @@ async def get_worker_status(db: AsyncSession = Depends(get_db)):
         "last_processed_at": last_processed.isoformat() if last_processed else None,
         "imap_check_interval_minutes": 5,
     }
+    
+@router.get("/check-imap")
+async def check_imap_connection():
+    """
+    Проверить подключение к IMAP-серверу.
+    
+    Выполняет диагностику: DNS, TCP, SSL, аутентификация, папки, INBOX.
+    Возвращает детальный отчёт по каждому этапу.
+    """
+    try:
+        # IMAP-библиотеки синхронные, запускаем в executor
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None,
+            lambda: asyncio.run(IMAPChecker.check_connection())
+        )
+        return result
+    except RuntimeError:
+        # Если уже есть event loop
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            result = await loop.run_in_executor(
+                pool,
+                IMAPChecker.check_connection
+            )
+        return result

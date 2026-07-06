@@ -147,14 +147,15 @@ class EmailProcessor:
             # 3. Создаем объект Email
             email = Email(
                 uid=email_data["uid"],
-                folder=email_data["folder"],
-                from_email=email_data["from_email"],
-                from_name=email_data["from_name"],
-                to_emails=email_data["to_emails"],
-                subject=email_data["subject"],
-                body_text=email_data["body_text"],
+                folder=email_data.get("folder", "INBOX"),
+                from_email=email_data.get("from_email"),
+                from_name=email_data.get("from_name"),
+                to_emails=email_data.get("to_emails"),
+                subject=email_data.get("subject"),
+                body_text=email_data.get("body_text", ""),
+                body_html=email_data.get("body_html", ""),  # ← НОВОЕ ПОЛЕ
                 email_date=email_date,
-                attachments_info=email_data["attachments_info"],
+                attachments_info=email_data.get("attachments_info"),
                 category=analysis.get("category", "GENERAL"),
                 summary=analysis.get("summary"),
                 llm_model_used="qwen2.5:7b",

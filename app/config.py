@@ -38,6 +38,11 @@ class Settings(BaseSettings):
     RAG_CHUNK_OVERLAP: int = 50
     RAG_TOP_K: int = 5
     
+    # В классе Settings
+    IMAP_BATCH_SIZE: int = 100          # Размер пакета для обработки
+    IMAP_PAUSE_BETWEEN_BATCHES: int = 5 # Пауза между пакетами (сек)
+    IMAP_MAX_EMAILS_PER_RUN: int = 500  # Максимум писем за один запуск
+    
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
