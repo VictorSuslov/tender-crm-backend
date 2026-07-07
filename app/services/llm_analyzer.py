@@ -2,7 +2,7 @@ import httpx
 import json
 import html2text
 import io
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 from app.config import settings
 
@@ -13,6 +13,9 @@ class LLMAnalyzer:
     def __init__(self):
         self.api_url = settings.OLLAMA_API_URL
         self.model = settings.OLLAMA_MODEL
+        self.embedding_model = getattr(settings, 'EMBEDDING_MODEL_NAME', 
+                                       'jeffh/intfloat-multilingual-e5-large-instruct:q8_0')
+        self.embedding_dimensions = getattr(settings, 'EMBEDDING_DIMENSIONS', 1024)
         self.timeout = 180  # секунд
         
         # Конвертер HTML в текст
@@ -20,6 +23,91 @@ class LLMAnalyzer:
         self.html_converter.ignore_links = False
         self.html_converter.ignore_images = True
         self.html_converter.body_width = 0
+    
+    # =========================================================================
+    # ЭМБЕДДИНГИ (для RAG)
+    # =========================================================================
+    
+    async def get_embedding(self, text: str) -> List[float]:
+        """
+        Получает эмбеддинг текста через Ollama.
+        """
+        if not text.strip():
+            return [0.0] * self.embedding_dimensions
+        
+        text = text[:2000] if len(text) > 2000 else text
+        prefixed_text = f"passage: {text}"
+        
+        # Правильный URL: убираем последнюю часть (/generate) и добавляем /embeddings
+        base_url = self.api_url.rsplit('/', 1)[0]  # "http://localhost:11434/api"
+        embeddings_url = f"{base_url}/embeddings"  # "http://localhost:11434/api/embeddings"
+        
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    embeddings_url,
+                    json={
+                        "model": self.embedding_model,
+                        "prompt": prefixed_text
+                    },
+                    timeout=30.0
+                )
+                response.raise_for_status()
+                
+                result = response.json()
+                embedding = result.get("embedding", [])
+                
+                if not embedding:
+                    raise ValueError("Пустой эмбеддинг от модели")
+                
+                return embedding
+                
+        except httpx.TimeoutException:
+            print(f"  ✗ Таймаут получения эмбеддинга (30с)")
+            raise
+        except httpx.HTTPStatusError as e:
+            print(f"  ✗ HTTP ошибка при получении эмбеддинга: {e.response.status_code}")
+            if e.response.status_code == 404:
+                print(f"  → Модель '{self.embedding_model}' не найдена.")
+                print(f"  → Запустите: ollama pull {self.embedding_model}")
+            raise
+        except Exception as e:
+            print(f"  ✗ Ошибка получения эмбеддинга: {e}")
+            raise
+    
+    async def get_query_embedding(self, query: str) -> List[float]:
+        """Получает эмбеддинг поискового запроса."""
+        if not query.strip():
+            return [0.0] * self.embedding_dimensions
+        
+        query = query[:500] if len(query) > 500 else query
+        prefixed_query = f"query: {query}"
+        
+        base_url = self.api_url.rsplit('/', 1)[0]
+        embeddings_url = f"{base_url}/embeddings"
+        
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    embeddings_url,
+                    json={
+                        "model": self.embedding_model,
+                        "prompt": prefixed_query
+                    },
+                    timeout=30.0
+                )
+                response.raise_for_status()
+                
+                result = response.json()
+                return result.get("embedding", [])
+                
+        except Exception as e:
+            print(f"  ✗ Ошибка получения эмбеддинга запроса: {e}")
+            raise
+    
+    # =========================================================================
+    # АНАЛИЗ ПИСЕМ
+    # =========================================================================
     
     async def analyze_email(
         self,
@@ -159,6 +247,10 @@ class LLMAnalyzer:
             "summary": error_message,
             "tender_details": None
         }
+    
+    # =========================================================================
+    # ИЗВЛЕЧЕНИЕ ТЕКСТА ИЗ ВЛОЖЕНИЙ
+    # =========================================================================
     
     def extract_text_from_html(self, html_content: str) -> str:
         """Конвертирует HTML в чистый текст."""
@@ -366,11 +458,22 @@ async def test_llm_analyzer():
     print("ТЕСТ LLM-АНАЛИЗАТОРА")
     print("=" * 60)
     print(f"Модель: {analyzer.model}")
+    print(f"Модель эмбеддингов: {analyzer.embedding_model}")
     print(f"API URL: {analyzer.api_url}")
     print()
     
-    # Тест 1: Тендерное письмо
-    print("Тест 1: Тендерное письмо")
+    # Тест 1: Эмбеддинг
+    print("Тест 1: Получение эмбеддинга")
+    try:
+        embedding = await analyzer.get_embedding("Тестовый текст для проверки работы эмбеддингов")
+        print(f"  ✓ Размерность: {len(embedding)}")
+        print(f"  ✓ Первые 5 значений: {embedding[:5]}")
+    except Exception as e:
+        print(f"  ✗ Ошибка: {e}")
+    print()
+    
+    # Тест 2: Тендерное письмо
+    print("Тест 2: Тендерное письмо")
     result = await analyzer.analyze_email(
         subject="Извещение о проведении электронного аукциона №0123456789",
         body_text="Уважаемый участник! Извещаем вас о проведении электронного аукциона на поставку серверного оборудования. НМЦК: 2 500 000 руб. Срок подачи заявок: 05.07.2026 до 10:00 МСК.",
@@ -381,8 +484,8 @@ async def test_llm_analyzer():
     print(f"  Детали тендера: {result.get('tender_details')}")
     print()
     
-    # Тест 2: Спам
-    print("Тест 2: Рекламное письмо")
+    # Тест 3: Спам
+    print("Тест 3: Рекламное письмо")
     result = await analyzer.analyze_email(
         subject="Скидка 50% на все услуги!",
         body_text="Только сегодня! Успейте воспользоваться специальным предложением. Акция действует до конца месяца.",
@@ -392,8 +495,8 @@ async def test_llm_analyzer():
     print(f"  Резюме: {result.get('summary')}")
     print()
     
-    # Тест 3: Обычное письмо
-    print("Тест 3: Обычное деловое письмо")
+    # Тест 4: Обычное письмо
+    print("Тест 4: Обычное деловое письмо")
     result = await analyzer.analyze_email(
         subject="Re: Встреча в понедельник",
         body_text="Коллеги, добрый день! Подтверждаю встречу на понедельник в 14:00. Повестку отправлю позже.",

@@ -1,9 +1,11 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks, UploadFile, File
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional, List
 from datetime import datetime
 import time
+import os
+import uuid
 
 from app.database import get_db, async_session
 from app.models.document import Document, DocumentChunk
@@ -19,10 +21,109 @@ from app.schemas.document import (
     SearchChunk,
 )
 from app.services.document_service import document_service
-from app.services.embedding_service import embedding_service
+from app.services.embedding_service import EmbeddingService
+from app.services.llm_analyzer import LLMAnalyzer
 
 
 router = APIRouter(prefix="/api/documents", tags=["documents"])
+
+
+# ============================================================================
+# Загрузка файлов
+# ============================================================================
+
+@router.post("/upload/{tender_id}")
+async def upload_documents(
+    tender_id: int,
+    files: List[UploadFile] = File(...),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Загрузить файлы для тендера и автоматически индексировать их для RAG.
+
+    Поддерживаемые форматы: PDF, DOC, DOCX, XLSX, TXT
+    """
+    # Проверяем существование тендера
+    result = await db.execute(select(Tender).where(Tender.id == tender_id))
+    if not result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Тендер не найден")
+
+    uploaded_docs = []
+    llm = LLMAnalyzer()
+
+    for file in files:
+        # Проверяем расширение
+        allowed_extensions = [".pdf", ".doc", ".docx", ".xlsx", ".txt"]
+        file_ext = os.path.splitext(file.filename)[1].lower()
+
+        if file_ext not in allowed_extensions:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Неподдерживаемый формат файла: {file.filename}. "
+                       f"Допустимы только: {', '.join(allowed_extensions)}"
+            )
+
+        # Читаем содержимое
+        content_bytes = await file.read()
+        file_size = len(content_bytes)
+
+        # Извлекаем текст из файла
+        try:
+            attachment_info = {
+                "filename": file.filename,
+                "content_type": file.content_type or "application/octet-stream",
+            }
+            extracted_text = llm.extract_text_from_attachment(attachment_info, content_bytes)
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Ошибка при извлечении текста из {file.filename}: {str(e)}"
+            )
+
+        if not extracted_text or len(extracted_text.strip()) < 10:
+            extracted_text = f"[Файл {file.filename}: текст не удалось извлечь или файл пуст]"
+
+        # Создаём документ через сервис
+        doc = await document_service.create_document(
+            tender_id=tender_id,
+            doc_type="ATTACHMENT",
+            title=file.filename,
+            content=extracted_text,
+            metadata={
+                "original_filename": file.filename,
+                "size_bytes": file_size,
+                "content_type": file.content_type,
+                "uploaded_at": datetime.utcnow().isoformat(),
+            },
+        )
+
+        # Индексируем документ
+        is_indexed = False
+        chunks_count = 0
+        try:
+            print(f"  🔍 Начинаем индексацию '{file.filename}'...")
+            result = await EmbeddingService.index_document(db, doc.id)
+            chunks_count = result.get("chunks_created", 0)
+            is_indexed = True
+            print(f"  ✓ Документ '{file.filename}' проиндексирован: {chunks_count} чанков")
+        except Exception as e:
+            print(f"  ⚠ Ошибка индексации '{file.filename}': {e}")
+            import traceback
+            traceback.print_exc()
+
+        uploaded_docs.append({
+            "id": doc.id,
+            "filename": file.filename,
+            "size_bytes": file_size,
+            "is_indexed": is_indexed,
+            "chunks_count": chunks_count,
+        })
+
+    return {
+        "status": "success",
+        "uploaded_count": len(uploaded_docs),
+        "documents": uploaded_docs,
+    }
 
 
 # ============================================================================
@@ -37,18 +138,19 @@ async def create_document(
 ):
     """
     Создать новый документ для тендера.
-    
+
     Типы документов:
     - TENDER_APPLICATION — заявка на участие
     - SUPPLEMENT — дополнительное соглашение
     - EMAIL — письмо
     - NOTE — заметка пользователя
+    - ATTACHMENT — прикреплённый файл
     """
     # Проверяем существование тендера
     result = await db.execute(select(Tender).where(Tender.id == tender_id))
     if not result.scalar_one_or_none():
         raise HTTPException(status_code=404, detail="Тендер не найден")
-    
+
     doc = await document_service.create_document(
         tender_id=tender_id,
         doc_type=data.doc_type,
@@ -56,7 +158,7 @@ async def create_document(
         content=data.content,
         metadata=data.metadata,
     )
-    
+
     return doc
 
 
@@ -70,9 +172,9 @@ async def list_documents(
     result = await db.execute(select(Tender).where(Tender.id == tender_id))
     if not result.scalar_one_or_none():
         raise HTTPException(status_code=404, detail="Тендер не найден")
-    
+
     documents = await document_service.get_documents_by_tender(tender_id)
-    
+
     return DocumentList(
         items=documents,
         total=len(documents),
@@ -88,7 +190,7 @@ async def get_document(
     doc = await document_service.get_document_by_id(document_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Документ не найден")
-    
+
     return doc
 
 
@@ -115,7 +217,7 @@ async def index_document(
 ):
     """
     Проиндексировать документ: разбить на чанки и создать эмбеддинги.
-    
+
     ⚠️ Внимание: операция занимает ~1-2 секунды на каждый чанк.
     Для больших документов может потребоваться несколько минут.
     """
@@ -123,16 +225,16 @@ async def index_document(
     doc = await document_service.get_document_by_id(document_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Документ не найден")
-    
+
     start_time = time.time()
-    
+
     try:
         chunks_count = await document_service.index_document(document_id)
         processing_time = int((time.time() - start_time) * 1000)
-        
+
         # Получаем обновленный документ
         doc = await document_service.get_document_by_id(document_id)
-        
+
         return DocumentIndexResult(
             document_id=document_id,
             chunks_count=chunks_count,
@@ -153,14 +255,14 @@ async def index_all_documents(
 ):
     """
     Проиндексировать все неиндексированные документы тендера.
-    
+
     Полезно для массовой индексации после загрузки нескольких документов.
     """
     # Проверяем существование тендера
     result = await db.execute(select(Tender).where(Tender.id == tender_id))
     if not result.scalar_one_or_none():
         raise HTTPException(status_code=404, detail="Тендер не найден")
-    
+
     # Получаем неиндексированные документы
     result = await db.execute(
         select(Document).where(
@@ -169,7 +271,7 @@ async def index_all_documents(
         )
     )
     documents = result.scalars().all()
-    
+
     if not documents:
         return {
             "status": "ok",
@@ -177,10 +279,10 @@ async def index_all_documents(
             "indexed_count": 0,
             "total_chunks": 0,
         }
-    
+
     total_chunks = 0
     indexed_ids = []
-    
+
     for doc in documents:
         try:
             chunks_count = await document_service.index_document(doc.id)
@@ -188,7 +290,7 @@ async def index_all_documents(
             indexed_ids.append(doc.id)
         except Exception as e:
             print(f"⚠ Ошибка индексации документа {doc.id}: {e}")
-    
+
     return {
         "status": "ok",
         "message": f"Проиндексировано {len(indexed_ids)} документов",
@@ -211,8 +313,8 @@ async def create_document_from_email(
 ):
     """
     Создать документ из письма.
-    
-    Создает документ типа EMAIL с содержимым письма и (опционально) 
+
+    Создает документ типа EMAIL с содержимым письма и (опционально)
     текстом из вложений.
     """
     # Получаем письмо
@@ -220,33 +322,42 @@ async def create_document_from_email(
     email = result.scalar_one_or_none()
     if not email:
         raise HTTPException(status_code=404, detail="Письмо не найдено")
-    
+
     # Проверяем существование тендера
     result = await db.execute(select(Tender).where(Tender.id == tender_id))
     if not result.scalar_one_or_none():
         raise HTTPException(status_code=404, detail="Тендер не найден")
-    
+
     # Формируем содержимое документа
     content_parts = []
-    
+
     # Метаданные письма
     content_parts.append(f"Тема: {email.subject or '(без темы)'}")
     content_parts.append(f"От: {email.from_name or email.from_email}")
     content_parts.append(f"Дата: {email.email_date}")
     content_parts.append("")
-    
+
     # Тело письма
     if email.body_text:
         content_parts.append("=== ТЕКСТ ПИСЬМА ===")
         content_parts.append(email.body_text)
         content_parts.append("")
-    
+
+    # HTML-тело письма (если есть и отличается от text)
+    if email.body_html and not email.body_text:
+        # Конвертируем HTML в текст, если plain text отсутствует
+        llm = LLMAnalyzer()
+        html_text = llm.extract_text_from_html(email.body_html)
+        content_parts.append("=== ТЕКСТ ПИСЬМА (из HTML) ===")
+        content_parts.append(html_text)
+        content_parts.append("")
+
     # Резюме LLM
     if email.summary:
         content_parts.append("=== РЕЗЮМЕ ===")
         content_parts.append(email.summary)
         content_parts.append("")
-    
+
     # Тендерные данные
     if email.tender_details:
         content_parts.append("=== ТЕНДЕРНЫЕ ДАННЫЕ ===")
@@ -254,15 +365,15 @@ async def create_document_from_email(
             if value:
                 content_parts.append(f"{key}: {value}")
         content_parts.append("")
-    
+
     # Текст из вложений
     if data.include_attachments_text and email.attachments_info:
         content_parts.append("=== ВЛОЖЕНИЯ ===")
         for att in email.attachments_info:
             content_parts.append(f"- {att.get('filename', 'без имени')} ({att.get('size_bytes', 0)} байт)")
-    
+
     content = "\n".join(content_parts)
-    
+
     # Создаем документ
     doc = await document_service.create_document(
         tender_id=tender_id,
@@ -277,7 +388,7 @@ async def create_document_from_email(
             "category": email.category,
         },
     )
-    
+
     return doc
 
 
@@ -294,7 +405,7 @@ async def search_documents(
 ):
     """
     Семантический поиск по документам.
-    
+
     Использует векторные эмбеддинги для поиска релевантных фрагментов.
     Если указан tender_id — поиск только в документах этого тендера.
     """
@@ -303,18 +414,18 @@ async def search_documents(
         result = await db.execute(select(Tender).where(Tender.id == tender_id))
         if not result.scalar_one_or_none():
             raise HTTPException(status_code=404, detail="Тендер не найден")
-    
+
     start_time = time.time()
-    
+
     try:
         chunks = await document_service.search(
             query=query,
             tender_id=tender_id,
             top_k=top_k,
         )
-        
+
         processing_time = int((time.time() - start_time) * 1000)
-        
+
         return SearchResult(
             query=query,
             tender_id=tender_id,
@@ -339,31 +450,31 @@ async def get_documents_statistics(db: AsyncSession = Depends(get_db)):
     # Всего документов
     total_result = await db.execute(select(func.count(Document.id)))
     total = total_result.scalar()
-    
+
     # По типам
     type_result = await db.execute(
         select(Document.doc_type, func.count(Document.id))
         .group_by(Document.doc_type)
     )
     by_type = {row[0]: row[1] for row in type_result.all()}
-    
+
     # Индексированные / неиндексированные
     indexed_result = await db.execute(
         select(func.count(Document.id)).where(Document.is_indexed == True)
     )
     indexed = indexed_result.scalar()
-    
+
     # Всего чанков
     chunks_result = await db.execute(select(func.count(DocumentChunk.id)))
     total_chunks = chunks_result.scalar()
-    
+
     # Чанков по тендерам
     chunks_by_tender_result = await db.execute(
         select(DocumentChunk.tender_id, func.count(DocumentChunk.id))
         .group_by(DocumentChunk.tender_id)
     )
     chunks_by_tender = {row[0]: row[1] for row in chunks_by_tender_result.all()}
-    
+
     return {
         "total_documents": total,
         "indexed_documents": indexed,

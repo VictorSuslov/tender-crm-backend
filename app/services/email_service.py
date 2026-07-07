@@ -4,6 +4,7 @@ from typing import Optional, Tuple, List
 from app.models.email import Email
 from app.models.tender import Tender
 from app.models.email_tender_link import EmailTenderLink
+from app.services.tender_linker import TenderLinker
 
 
 class EmailService:

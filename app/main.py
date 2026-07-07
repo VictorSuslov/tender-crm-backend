@@ -10,6 +10,7 @@ from app.workers.imap_worker import imap_worker
 from app.api.emails import router as emails_router
 from app.api.documents import router as documents_router
 from app.api.rag import router as rag_router
+from app.api.documents_upload import router as documents_upload_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -55,6 +56,7 @@ app.include_router(worker_router)
 app.include_router(emails_router)
 app.include_router(documents_router)
 app.include_router(rag_router)
+app.include_router(documents_upload_router)
 
 @app.get("/")
 async def root():
