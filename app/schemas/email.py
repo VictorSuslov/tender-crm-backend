@@ -16,6 +16,14 @@ class TenderDetailsRead(BaseModel):
     purchase_name: Optional[str] = None
     nmck: Optional[str] = None
     deadline: Optional[str] = None
+    
+class EmailTenderLinkRead(BaseModel):
+    tender_id: int
+    link_type: str
+    tender_name: Optional[str] = None
+    
+    class Config:
+        from_attributes = True
 
 
 class EmailRead(BaseModel):
@@ -47,7 +55,7 @@ class EmailRead(BaseModel):
     processed_at: Optional[datetime] = None
     
     # Дополнительные поля (заполняются отдельно)
-    linked_tenders: List[int] = []
+    linked_tenders: List[EmailTenderLinkRead] = []
 
 
 class EmailList(BaseModel):
