@@ -170,3 +170,31 @@ class EmailService:
         
         email.is_important = is_important
         return email
+        
+    @staticmethod
+    async def try_auto_link_email(
+        db: AsyncSession,
+        email_id: int,
+        tender_details: dict
+    ) -> dict:
+        """
+        Автоматическая привязка письма к существующему тендеру.
+        Если не удалось привязать — ничего не делает.
+        
+        Args:
+            db: Сессия БД
+            email_id: ID письма
+            tender_details: Данные из LLM (notice_number, purchase_name, nmck, deadline)
+        
+        Returns:
+            {"linked": True/False, "tender_id": int или None, "method": str или None}
+        """
+        if not tender_details:
+            return {"linked": False, "tender_id": None, "method": None}
+        
+        try:
+            result = await TenderLinker.try_link_email(db, email_id, tender_details)
+            return result
+        except Exception as e:
+            print(f"  ⚠️ Ошибка при автоматической привязке: {e}")
+            return {"linked": False, "tender_id": None, "method": None}

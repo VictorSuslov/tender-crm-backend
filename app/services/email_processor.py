@@ -214,32 +214,46 @@ class EmailProcessor:
         if not email.tender_details:
             return None
         
-        # Уровень 1: Поиск по номеру извещения
+        import re
+        
+        # Уровень 1: Поиск по номеру извещения (нечёткий)
         notice_number = email.tender_details.get("notice_number")
-        if notice_number:
-            result = await session.execute(
-                select(Tender).where(
-                    Tender.notice_number == notice_number,
-                    Tender.status.in_(['NEW', 'IN_PROGRESS', 'SUBMITTED'])
+        if notice_number and notice_number.strip():
+            # Очищаем номер от лишних символов
+            notice_clean = re.sub(r"[^0-9]", "", notice_number)
+            
+            if notice_clean:
+                result = await session.execute(
+                    select(Tender).where(
+                        Tender.notice_number.ilike(f"%{notice_clean}%"),
+                        Tender.status.in_(['NEW', 'IN_PROGRESS', 'SUBMITTED', 'WON'])
+                    )
                 )
-            )
-            tender = result.scalar_one_or_none()
-            if tender:
-                return tender.id
+                tender = result.scalar_one_or_none()
+                if tender:
+                    print(f"    🔗 Найдено совпадение по номеру: {notice_clean}")
+                    return tender.id
         
         # Уровень 2: Нечеткий поиск по названию закупки
         purchase_name = email.tender_details.get("purchase_name")
-        if purchase_name and len(purchase_name) > 20:
+        if purchase_name and len(purchase_name.strip()) > 15:
+            # Используем pg_trgm similarity
             result = await session.execute(
                 select(Tender).where(
-                    Tender.status.in_(['NEW', 'IN_PROGRESS', 'SUBMITTED']),
-                    func.similarity(Tender.purchase_name, purchase_name) > 0.6
+                    Tender.status.in_(['NEW', 'IN_PROGRESS', 'SUBMITTED', 'WON']),
+                    func.similarity(Tender.purchase_name, purchase_name) > 0.5
                 ).order_by(
                     func.similarity(Tender.purchase_name, purchase_name).desc()
                 ).limit(1)
             )
             tender = result.scalar_one_or_none()
             if tender:
+                similarity = await session.execute(
+                    select(func.similarity(Tender.purchase_name, purchase_name))
+                    .where(Tender.id == tender.id)
+                )
+                sim_value = similarity.scalar()
+                print(f"    🔗 Найдено совпадение по названию (similarity={sim_value:.2f})")
                 return tender.id
         
         return None
